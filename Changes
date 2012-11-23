@@ -1,0 +1,6 @@
+Revision history for Perl extension AnyEvent::IProto.
+
+0.01  Thu Nov 22 14:33:11 2012
+	- original version; created by h2xs 1.23 with options
+		-X -n AnyEvent::IProto -A -b 5.8.8
+

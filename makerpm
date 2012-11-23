@@ -1,0 +1,540 @@
+#!/usr/bin/perl
+
+use strict;
+use FindBin;
+our ($LIB);
+BEGIN {
+	$LIB = "$FindBin::Bin/lib";
+}
+use File::Find;
+use Config;
+use YAML;
+use lib "$FindBin::Bin/inc";
+#use RPM::Make::DWIW;
+my $meta = YAML::LoadFile("$FindBin::Bin/MYMETA.yml");
+
+sub say (@) { print @_,"\n"; }
+
+=for rem
+for (keys %Config) {
+	length $Config{$_} or next;
+	$Config{$_} eq 'define' and next;
+	say $_, ' = ',$Config{$_};
+}
+__END__
+=cut
+# rpm --eval '%{_arch}'
+
+say();
+
+say $Config{installbin};
+say $Config{installscript};
+say $Config{installman1dir};
+say $Config{installman3dir};
+say $Config{sitelib};
+say $Config{sitearch};
+
+unless (-e "$FindBin::Bin/blib") {
+	die "Can't find $FindBin::Bin/blib: $!. You should run make first\n";
+}
+
+my %dest = (
+	"$FindBin::Bin/blib/bin"    => $Config{installbin},
+	"$FindBin::Bin/blib/script" => $Config{installscript},
+	"$FindBin::Bin/blib/lib"    => $Config{sitelib},
+	"$FindBin::Bin/blib/arch"   => $Config{sitearch},
+	"$FindBin::Bin/blib/man1"   => $Config{installman1dir},
+	"$FindBin::Bin/blib/man3"   => $Config{installman3dir},
+);
+
+my $xs = 0;
+my %files;
+for my $dir (keys %dest) {
+	( my $key = $dir ) =~ s{^\Q$FindBin::Bin/blib\E/}{};
+	$files{$key} ||= [];
+	find sub {
+		return if -d;
+		return if m{^\.exists$};
+		$xs = 1 if /\.(o|so|bs)$/;
+		( my $name = $File::Find::name ) =~ s{^\Q$dir\E/}{}s;
+		print $File::Find::name, " => $dest{$dir} | $name\n";
+		push @{ $files{$key} }, {
+			src  => $File::Find::name,
+			dest => "$dest{$dir}/$name",
+		};
+	}, $dir;
+}
+
+use Data::Dumper;
+
+my $spec = {
+	tags => {
+        Summary     => $meta->{abstract},
+        Name        => 'perl-'.$meta->{name},
+        Version     => $meta->{version},
+        Release     => '1',
+        License     => 'perl',
+        Group       => 'Development/Libraries',
+        #Source     => 'ftp://ftp.acme.com/acmedb_client-1.3.tar.gz',
+        #URL        => 'http://www.acme.com/acmedb_client/',
+        #Distribution => 'ACME',
+        #Vendor     => 'ACME Software, Inc.',
+        Packager   => $meta->{author}[0],
+	},
+	description => $meta->{abstract},
+	items => [
+		{
+			defaults => 1,
+			type => 'file',
+			mode => '0755',
+			owner => 'root',
+			group => 'wheel',
+		},
+		@{ $files{bin} },
+		@{ $files{script} },
+		
+		{
+			defaults => 1,
+			mode => '0444',
+		},
+		@{ $files{lib} },
+		@{ $files{arch} },
+		@{ $files{man1} },
+		@{ $files{man3} },
+	],
+	requirements => [
+		{
+			name        => 'perl',
+			min_version => '5.8.8',
+		},
+		( map {+{
+			name => 'perl-'.$_,
+			min_version => $meta->{requires}{$_},
+		}} keys %{ $meta->{requires} }),
+	],
+    #pre     => 'echo pre',
+    #preun   => 'echo preun',
+    #post    => 'echo post',
+    #postun  => 'echo postun',
+    cleanup => 1,
+    !$xs ? ( target => 'noarch' ) : (),
+};
+#warn Dumper $spec;
+#warn Dumper $meta;
+
+RPM::Make::DWIW::write_rpm($spec);
+system("mv", RPM::Make::DWIW::get_rpm_filename(), "$FindBin::Bin/dist/");
+
+exit (0); 
+
+
+BEGIN {
+
+package #hide
+	RPM::Make::DWIW;
+
+use strict;
+no warnings 'uninitialized';
+
+use vars qw( $VERSION );
+use Config;
+BEGIN {
+	*CORE::GLOBAL::system = sub {
+		printf STDERR ">> @_\n";
+		CORE::system(@_);
+	};
+}
+$VERSION = '0.2';
+
+my $FINAL_RPM_PATH;
+my $TOP;
+
+## validation: key => type, mandatory
+
+my $TOP_VAL = {
+    tags            => [ {}, 1 ],
+    description     => [ '', 1 ],
+    items           => [ [], 1],
+    requirements    => [ [], 0],
+    pre             => [ '', 0 ],
+    post            => [ '', 0 ],
+    preun           => [ '', 0 ],
+    postun          => [ '', 0 ],
+    cleanup         => [ '', 0 ],
+    target          => [ '', $Config{ archname } ],
+};
+
+my $TAGS_VAL = {
+    Summary         => [ '', 1 ],
+    Name            => [ '', 1 ],
+    Version         => [ '', 1 ],
+    Release         => [ '', 1 ],
+    License         => [ '', 1 ],
+    Group           => [ '', 1 ],
+    Source          => [ '', 0 ],
+    URL             => [ '', 0 ],
+    Distribution    => [ '', 0 ],
+    Vendor          => [ '', 0 ],
+    Packager        => [ '', 0 ],
+};
+
+my $ITEM_VAL = {
+    type            => [ '', 1 ],
+    dest            => [ '', 1 ],
+    src             => [ '', 0 ],
+    mode            => [ '', 1 ],
+    owner           => [ '', 1 ],
+    group           => [ '', 1 ],
+    defaults        => [ '', 0 ],
+    config_p        => [ '', 0 ],
+};
+
+## example spec
+
+my $X = {
+    tags => {
+        Summary => 'A CD player app that rocks!',
+        Name    => 'cdplayer',
+        Version => '1.2',
+        Release => '3',
+        License => 'GPL',
+        Group   => 'Applications/Sound',
+        #Source => 'ftp://ftp.gnomovision.com/pub/cdplayer/cdplayer-1.0.tgz',
+        #URL => 'http://www.gnomovision.com/cdplayer/cdplayer.html',
+        #Distribution => 'WSS Linux',
+        #Vendor => 'White Socks Software, Inc.',
+        #Packager => 'Santa Claus <sclaus@northpole.com>',
+    },
+    description => 'abc def ghi',
+    items => [
+        {
+            defaults => 1,
+            owner    => 'root',
+            group    => 'admin',
+            mode     => '0644',
+        },
+        {
+            src   => 'abc.txt',
+            dest  => '/usr/bin/abc.txt',
+            mode  => '0755',
+            owner => 'cdplayer',
+            group => 'admin',
+        },
+        {
+            src   => 'def.txt',
+            dest  => '/usr/lib/def.txt',
+        },
+        {
+            src   => 'def.txt',
+            dest  => '/etc/cdplayer.conf',
+            config_p => 1,
+        },
+        {
+            dest  => '/tmp/acme6',
+            type  => 'dir',
+            mode  => '0777',
+        },
+    ],
+    requirements => [
+        {
+        name        => 'libxml2',
+        min_version => '2.6.0',
+        }
+    ],
+    post => '/sbin/ldconfig',
+    cleanup => 0,
+};
+
+## mkdir or die
+
+sub xmkdir {
+    my $dir = shift;
+    mkdir($dir) or die "Can't mkdir $dir: $!";
+}
+
+sub mk_dirs {
+    $TOP = "topdir-$$";
+    system("rm -rf $TOP"); # just in case it exists
+    xmkdir($TOP);
+    xmkdir("$TOP/RPMS"); # where the rpm will end up
+    xmkdir("$TOP/BUILD"); # ??
+    xmkdir("$TOP/root"); # where rpmbuild will take files from
+}
+
+sub rm_dirs {
+    die "top not defined" unless $TOP;
+    system("rm -rf $TOP");
+}
+
+## generate RPM spec file as string
+
+sub mk_spec {
+    my $x = shift;
+    my $t = scalar localtime;
+    my $res = "## autogenerated by $0 - $t\n\n";
+    my $tags = $x->{ tags };
+    foreach my $key(sort keys %$tags) {
+        $res .= "$key: $tags->{ $key }\n";
+    }
+
+    $res .= "\n%description\n$x->{ description }\n\n";
+
+    foreach my $dep(@{ $x->{ requirements } }) {
+        my $mv = defined $dep->{ min_ver } ? " >= $dep->{ min_ver }" : '';
+        $res .= "requires: $dep->{ name }$mv\n";
+    }
+
+    $res .= "\n%files\n";
+
+    my $items = get_items($x);
+    foreach my $item(@$items) {
+        $res .= mk_spec_file_line($item) . "\n";
+    }
+
+    foreach my $section(qw( pre post preun postun )) {
+        $res .= "\n\n%$section\n$x->{ $section }\n\n" if $x->{ $section };
+    }
+    $res;
+}
+
+## given file (or dir) hashref, return specfile line
+
+sub mk_spec_file_line {
+    my $file = shift;
+    foreach my $k(qw( mode owner group dest )) {
+        die "Missing key: $k in item" unless defined $file->{ $k };
+    }
+    my $line = "%attr($file->{ mode } $file->{ owner } $file->{ group }) $file->{ dest }";
+    $line = "%config $line" if $file->{ config_p };
+    $line;
+}
+
+## given spec hashref, write specfile
+
+sub write_spec {
+    my $x = shift;
+    spew("$TOP/specfile", mk_spec($x));
+}
+
+## cp src file to dest or die; create dirs as needed
+
+sub cpx {
+    my($src, $dest, $mode) = @_;
+    die "Invalid mode '$mode'" unless $mode =~ /^\d{4}$/;
+    die "Not found: $src" unless -e $src;
+    my @parts = split /\//, $dest;
+    pop @parts;
+    my @p2;
+    while(@parts) {
+        push @p2, shift @parts;
+        my $dir = join('/', @p2);
+        unless(-e $dir) {
+            xmkdir($dir);
+        }
+    }
+    system('/bin/cp', $src, $dest) && die "Failed to cp '$src' to '$dest'";
+    #system('/bin/chmod', $mode, $dest) && die "Failed to chmod '$dest'";
+}
+    
+## given spec hashref, cp necessary files into tmp tree
+
+sub cp_files {
+    my $x = shift;
+    my $files = get_files($x);
+    foreach my $file(@$files) {
+        $file->{ dest } =~ m|^/| or die "Dest path must start with /";
+        cpx($file->{ src }, "$TOP/root$file->{ dest }", $file->{ mode });
+    }
+}
+
+## mk dirs explicitly requested
+## wait, is this any good?  rpm copy dirs?
+
+sub mk_specified_dirs {
+    my $x = shift;
+    my $dirs = get_dirs($x);
+    foreach my $dir(@$dirs) {
+        system("mkdir -p -m $dir->{ mode } $TOP/root$dir->{ dest }") && die "Failed to mkdir '$dir->{ dest }'";
+    }
+}
+
+#rpmbuild -bb --root `pwd`/root --define "_topdir /space/asher/sand/rpm/cdplayer-example/topdir" specfile2
+
+## create rpm or die
+use Config;
+sub xmk_rpm {
+	my $x = shift;
+    chomp (my $here = `pwd`);
+    warn "building in $here ($TOP) for $x->{target}";
+    my $rc = system(
+        qq[rpmbuild -bb --buildroot "$here/$TOP/root" --target "$x->{target}" --define "_topdir $here/$TOP" $TOP/specfile 2>&1]);
+    if($rc) {
+        print STDERR "Error: see $TOP/rpm.out\n";
+        exit -1;
+    }
+}
+
+## given x and RPM, check that RPM has the right files or die
+
+sub verify_rpm {
+    my($x, $rpm) = @_;
+    my $items = get_items($x);
+    my $want_files = join(' ', sort map { $_->{ dest } } @$items );
+    my $cmd = "rpm -q -p --filesbypkg $rpm";
+    chomp(my @res = `$cmd`);
+    my $have_files = join(' ', sort map { /\S+\s+(\S+)/ } @res)
+        or die "No files found with '$cmd'";
+    if($want_files ne $have_files) {
+        print STDERR "RPM $rpm does not have expected files:\nWant: $want_files\n\nHave: $have_files\n\n$cmd\n";
+        exit -1;
+    }
+}
+
+sub get_rpm_path {
+    chomp(my @res = `find $TOP/RPMS -type f`);
+    die "RPM not found" unless @res; ## should never happen
+    die "more than 1 rpm found" if @res > 1;
+    $res[0];
+}
+
+## copy the new rpm up to this level or die
+
+sub xcp_rpm_here {
+    my $rpm_path = shift;
+    $rpm_path =~ m|([^/]+)$| or die "Invalid rpm_path: '$rpm_path'";
+    $FINAL_RPM_PATH = $1;
+    system("cp $rpm_path .") && exit -1;
+}
+
+sub spew {
+    my($fn, $page) = @_;
+    open F, ">$fn" or die "Can't open $fn: $!";
+    print F $page;
+    close F;
+}
+
+## get files/dirs/all items, excluding defaults blocks
+
+sub get_files {
+    my $x = shift;
+    [ grep { $_->{ type } eq 'file' && !$_->{ defaults } } @{ $x->{ items } } ];
+}
+
+sub get_dirs {
+    my $x = shift;
+    [ grep { $_->{ type } eq 'dir' && !$_->{ defaults } } @{ $x->{ items } } ];
+}
+
+sub get_items {
+    my $x = shift;
+    [ grep { !$_->{ defaults } } @{ $x->{ items } } ];
+}
+
+## return error msg or '' if valid
+
+sub validate_hashref {
+    my($val, $x) = @_;
+    my @err;
+
+    foreach my $key(keys %$x) {
+        if(!$val->{ $key }) {
+            push @err, "Unknown key: $key";
+        }
+        my $r0 = ref $val->{ $key }[0];
+        my $r1 = ref $x->{ $key };
+        if($r0 ne $r1) {
+            push @err, "Wrong type: $key (got '$r1', expected '$r0)";
+        }
+    }
+    foreach my $key(keys %$val) {
+        if($val->{ $key }[1] && !$x->{ $key }) { ## mand && missing
+            push @err, "Missing key: $key";
+        }
+    }
+    join('; ', @err);
+}
+
+## validate or die with msg
+
+sub xvalidate_hashref {
+    my($val, $x, $name) = @_;
+    my $err = validate_hashref($val, $x) or return;
+    print STDERR "Error in $name: $err\n";
+    exit -1;
+}
+    
+sub validate_spec {
+    my $spec = shift;
+    xvalidate_hashref($TOP_VAL, $spec, 'top level');
+    xvalidate_hashref($TAGS_VAL, $spec->{ tags }, 'tags');
+    my $n = 0;
+    my $items = get_items($spec);
+    foreach my $item(@$items) {
+        xvalidate_hashref($ITEM_VAL, $item, "item $n");
+        $n ++;
+    }
+    1;
+}
+
+## add default vals to any items that lack them
+## modifies spec
+
+sub apply_defaults {
+    my($x) = @_;
+    my %d = ( type => 'file' );
+    foreach my $item(@{ $x->{ items } }) {
+        if($item->{ defaults }) { # it is a defaults block; modify our defaults
+            while(my($k, $v) = each %$item) {
+                next if $k eq 'defaults';
+                $d{ $k } = $v;
+            }
+        }
+        else { # apply defaults to this item
+            while(my($k, $v) = each %d) {
+                $item->{ $k } = $v unless defined $item->{ $k };
+            }
+        }
+    }
+}
+
+sub apply_global_defaults {
+    my($x) = @_;
+    $x->{ cleanup } = 1 unless exists $x->{ cleanup };
+}
+
+## public
+
+sub get_rpm_filename {
+    $FINAL_RPM_PATH;
+}
+
+## public
+
+sub get_example_spec {
+    $X;
+}
+
+## public
+## pass me a spec hashref
+
+sub write_rpm {
+    my($spec) = shift;
+    apply_global_defaults($spec);
+    apply_defaults($spec);
+    validate_spec($spec);
+    mk_dirs();
+    write_spec($spec);
+    cp_files($spec);
+    mk_specified_dirs($spec);
+    xmk_rpm($spec);
+    my $rpm_path = get_rpm_path();
+    verify_rpm($spec, $rpm_path);
+    xcp_rpm_here($rpm_path);
+    rm_dirs() if $spec->{ cleanup };
+    1;
+}
+
+
+}
+
+

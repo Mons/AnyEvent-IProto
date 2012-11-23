@@ -1,0 +1,16 @@
+Changes
+Kit.pm.PL
+lib/AnyEvent/IProto.pm
+lib/AnyEvent/IProto/Server.pm
+lib/AnyEvent/IProto/Server/Req.pm
+lib/AnyEvent/IProto/Util.pm
+LICENSE
+Makefile.PL
+MANIFEST			This list of files
+MANIFEST.SKIP
+META.json
+META.yml
+MYMETA.json
+MYMETA.yml
+README
+t/00-load.t
