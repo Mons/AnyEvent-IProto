@@ -1,7 +1,6 @@
 blib*
 Makefile
 Makefile.old
-MYMETA.*
 MANIFEST.bak
 Build
 _build*

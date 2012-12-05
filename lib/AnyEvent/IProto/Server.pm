@@ -29,6 +29,7 @@ sub register {
 	my $self = shift;
 	while (my ($type, $hdl) = splice @_,0,2) {
 		$hdl->[2] ||= 'AnyEvent::IProto::Server::Req';
+		exists $self->{map}{$type} and warn "Packet type $type already registered";
 		$self->{map}{$type} = $hdl;
 	}
 	return;
@@ -52,6 +53,18 @@ sub start {
 	return;
 }
 
+sub stop {
+	my ($self,$cb) = @_;
+	delete $self->{server};
+	if ($self->{requests} > 0) {
+		warn "Waiting for $self->{requests} requests to finish";
+		$self->{stop} = $cb;
+	} else {
+		warn "No requests";
+		$cb->();
+	}
+}
+
 sub write :method {
 	my ($self,$id,$buf) = @_;
 	exists $self->{$id} or return warn "unknown id $id";
@@ -65,10 +78,10 @@ sub write :method {
 		# ok;
 	}
 	elsif (defined $w) {
-		substr($buf,0,$w,'');
-		$self->{cnn}->push_write( \$buf );
+		substr($$buf,0,$w,'');
+		$self->{$id}{wbuf} = $buf;
 		$self->{$id}{ww} = AE::io $fh, 1, sub {
-			
+			#warn "ww.io.$id";
 			$w = syswrite( $fh, ${ $self->{$id}{wbuf} } );
 			if ($w == length ${ $self->{$id}{wbuf} }) {
 				delete $self->{$id}{wbuf};
@@ -79,13 +92,15 @@ sub write :method {
 			}
 			else {
 				#warn "disconnect: $!";
-				delete $self->{$id};
+				#delete $self->{$id};
+				$self->drop($id);
 			}
 		};
 	}
 	else {
 		#warn "disconnect: $!";
-		delete $self->{$id};
+		#delete $self->{$id};
+		$self->drop($id);
 	}
 	
 }
@@ -96,9 +111,10 @@ sub accept :method {
 	
 	#warn "client connected ($id) @_";
 	
+	$self->{requests}++;
 	$self->{$id}{fh} = $fh;
 	$self->{$id}{rw} = AE::io $fh, 0, sub {
-	
+		#warn "rw.io.$id";
 		my $buf = $self->{rbuf};
 		my $len;
 		my $lsr;
@@ -120,27 +136,47 @@ sub accept :method {
 					
 					my $ref = \( substr($buf,$ix,$l) );
 					
-					my $map = exists $self->{map}{$type} ? $self->{map}{$type} : exists $self->{map}{''} ? $self->{map}{''} : next;
+					if( my $map = exists $self->{map}{$type} ? $self->{map}{$type} : exists $self->{map}{''} ? $self->{map}{''} : undef ) {
+						
+						my $req;
+						eval {
+							my @rv;
+							if (ref $map->[0] ) {
+								@rv = $map->[0]( $type, $ref );
+							}
+							elsif ( length $map->[0] ) {
+								@rv = unpack $map->[0], $$ref;
+							}
+							else {
+								@rv = ($ref);
+							}
+							$req = $map->[2]->new(
+								type => $type,
+								id   => $seq,
+								data => \@rv,
+								s    => $self,
+								idx  => $id,
+							);
+							weaken( $req->{s} );
+						1} or do {
+							warn "Failed fo capture packet type $type [seq $seq] body length $l: $@";
+							$req = $map->[2]->new(
+								type  => $type,
+								id    => $seq,
+								error => "$@",
+								data  => ["$$ref"],
+								s     => $self,
+								idx   => $id,
+							);
+						};
+						$map->[1]( $req );
 					
-					my @rv;
-					if (ref $map->[0] ) {
-						@rv = $map->[0]( $type, $ref );
+					} else {
+						warn "Unhandled request packet (seq:$seq) of type $type with body size $l\n";
+						my $body = pack("V V/a*", 255, "Request not handled");
+						my $buf = pack('VVV', $type, length($body), $seq ).$body;
+						$self->write($id,\$buf);
 					}
-					elsif ( length $map->[0] ) {
-						@rv = unpack $map->[0], $$ref;
-					}
-					else {
-						@rv = ($ref);
-					}
-					my $req = $map->[2]->new(
-						type => $type,
-						id   => $seq,
-						data => \@rv,
-						s    => $self,
-						idx  => $id,
-					);
-					weaken( $req->{s} );
-					$map->[1]( $req );
 					
 					$ix += $l;
 				}
@@ -165,12 +201,20 @@ sub accept :method {
 				#$! = Errno::EPIPE;
 			}
 		}
-		delete $self->{$id};
+		$self->drop($id);
 		
 	};
 	return;
 }
 
+sub drop {
+	my ($self,$id) = @_;
+	$self->{requests}--;
+	%{ delete $self->{$id} } = ();
+	if ( $self->{stop} and $self->{requests} == 0 ) {
+		$self->{stop}();
+	}
+}
 
 1;
 __END__

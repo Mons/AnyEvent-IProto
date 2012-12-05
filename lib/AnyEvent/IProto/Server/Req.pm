@@ -28,7 +28,7 @@ sub DESTROY {
 	my $self = shift;
 	#warn "DES $self";
 	return %$self = () unless $self->{s};
-	$self->reply(0, pack("V/a*","Request not handled") );
+	$self->reply(pack("V V/a*",255, "Request not handled") );
 	return;
 }
 
