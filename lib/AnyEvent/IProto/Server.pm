@@ -1,5 +1,7 @@
 package AnyEvent::IProto::Server;
 
+require AnyEvent::IProto; our $VERSION = $AnyEvent::IProto::VERSION;
+
 use 5.008008;
 use AnyEvent::IProto::Kit ':weaken', ':refaddr';
 use AnyEvent::IProto::Server::Req;
@@ -115,7 +117,7 @@ sub accept :method {
 	$self->{$id}{fh} = $fh;
 	$self->{$id}{rw} = AE::io $fh, 0, sub {
 		#warn "rw.io.$id";
-		my $buf = $self->{rbuf};
+		my $buf = $self->{$id}{rbuf};
 		my $len;
 		my $lsr;
 		while ( $self and ( $len = sysread( $fh, $buf, $self->{read_size}, length $buf) ) ) {
@@ -188,7 +190,7 @@ sub accept :method {
 			$buf = substr($buf,$ix);# if length $buf > $ix;
 		}
 		return unless $self;
-		$self->{rbuf} = $buf;
+		$self->{$id}{rbuf} = $buf;
 		
 		if (defined $len) {
 			#warn "EOF from client ($len)";

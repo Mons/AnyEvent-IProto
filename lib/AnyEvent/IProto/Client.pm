@@ -14,9 +14,11 @@ sub new {
 
 sub id   { $_[0]{id}   }
 sub type { $_[0]{type} }
-sub data { @{ $_[0]{data} } }
+sub data { @{ $_[0]{data} || [] } }
 
 package AnyEvent::IProto::Client;
+
+require AnyEvent::IProto; our $VERSION = $AnyEvent::IProto::VERSION;
 
 use 5.008008;
 use AnyEvent::IProto::Kit ':weaken', ':refaddr';

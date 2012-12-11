@@ -1,12 +1,6 @@
 use 5.008008;
 use ExtUtils::MakeMaker;
-
-our $AUTHOR = -e '.git';
-if ($AUTHOR) {
-	#system( 'pod2text ... > README' ) and die "$!";
-}
-unlink 'META.yml';
-
+$ENV{AUTHOR} and require CPAN::Meta;
 
 WriteMakefile(
 	NAME              => 'AnyEvent::IProto',

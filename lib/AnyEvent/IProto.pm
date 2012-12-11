@@ -3,9 +3,9 @@ package AnyEvent::IProto;
 use 5.008008;
 use AnyEvent::IProto::Kit;
 
-our $VERSION = '0.00_02';
+our $VERSION = '0.01';$VERSION = eval $VERSION;
 
-die "Please use either Client or Server\n";
+#die "Please use either Client or Server\n";
 
 
 # Preloaded methods go here.
