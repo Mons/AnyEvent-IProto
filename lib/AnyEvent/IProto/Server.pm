@@ -113,7 +113,6 @@ sub accept :method {
 	
 	#warn "client connected ($id) @_";
 	
-	$self->{requests}++;
 	$self->{$id}{fh} = $fh;
 	$self->{$id}{rw} = AE::io $fh, 0, sub {
 		#warn "rw.io.$id";
@@ -138,6 +137,7 @@ sub accept :method {
 					
 					my $ref = \( substr($buf,$ix,$l) );
 					
+					$self->requests(+1);
 					if( my $map = exists $self->{map}{$type} ? $self->{map}{$type} : exists $self->{map}{''} ? $self->{map}{''} : undef ) {
 						
 						my $req;
@@ -175,14 +175,16 @@ sub accept :method {
 					
 					} else {
 						warn "Unhandled request packet (seq:$seq) of type $type with body size $l\n";
-						my $body = pack("V V/a*", 255, "Request not handled");
+						my $body = pack("V V/a*", -1, "Request not handled");
 						my $buf = pack('VVV', $type, length($body), $seq ).$body;
 						$self->write($id,\$buf);
+						$self->requests(-1);
 					}
 					
 					$ix += $l;
 				}
 				else {
+					warn "wait for +".( 12 + $l - $ix - length($buf) )." more data" if $self->{debug};
 					last;
 				}
 				
@@ -209,10 +211,20 @@ sub accept :method {
 	return;
 }
 
+sub requests {
+	my ( $self, $delta ) = @_;
+	$self->{requests} += $delta;
+	if ( $self->{stop} and $self->{requests} == 0 ) {
+		$self->{stop}();
+	}
+}
+
 sub drop {
 	my ($self,$id) = @_;
 	$self->{requests}--;
-	%{ delete $self->{$id} } = ();
+	%{ delete $self->{$id} || {} } = ();
+	warn "client disconnected ($id) @_" if $self->{debug};
+	
 	if ( $self->{stop} and $self->{requests} == 0 ) {
 		$self->{stop}();
 	}

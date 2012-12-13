@@ -67,10 +67,11 @@ sub init {
 	$self->{timeout} ||= 30;
 	$self->{reconnect} = 0.1 unless exists $self->{reconnect};
 	if (exists $self->{server}) {
-		($self->{host},$self->{port}) = split ':',$self->{server},2;
-	} else {
-		$self->{server} = join ':',$self->{host},$self->{port};
+		my ($h,$p) = split ':',$self->{server},2;
+		$self->{host} = $h if length $h;
+		$self->{port} = $p if length $p;
 	}
+	$self->{server} = join ':',$self->{host},$self->{port};
 }
 
 sub new {
@@ -197,16 +198,16 @@ sub _on_connect {
 	unless ($fh) {
 		#warn "Connect failed: $!";
 		if ($self->{reconnect}) {
-			$self->{connfail} && $self->{connfail}->( "$!" );
+			$self->{connfail} && $self->{connfail}->( $self,"$!" );
 		} else {
-			$self->{disconnected} && $self->{disconnected}->( "$!" );
+			$self->{disconnected} && $self->{disconnected}->( $self,"$!" );
 		}
 		$self->_reconnect_after;
 		return;
 	}
 	$self->state( CONNECTED );
 	$self->{fh} = $fh;
-	$self->{connected} && $self->{connected}->( $self, $host,$port );
+	$self->{connected} && $self->{connected}->( $self,$host,$port );
 		
 	$self->{rw} = AE::io $fh,0,sub {
 		#warn "on_read";
@@ -348,10 +349,10 @@ sub disconnect {
 	delete $self->{_};
 	delete $self->{timers};
 	if ( $self->{pstate} == CONNECTED ) {
-			$self->{disconnected} && $self->{disconnected}->( @_ );
+			$self->{disconnected} && $self->{disconnected}->( $self,@_ );
 	}
 	elsif ( $self->{pstate} == CONNECTING ) {
-		$self->{connfail} && $self->{connfail}->( "$!" );
+		$self->{connfail} && $self->{connfail}->( $self,"$!" );
 	}
 	return;
 }

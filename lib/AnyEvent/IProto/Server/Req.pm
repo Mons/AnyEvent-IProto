@@ -8,7 +8,6 @@ sub new {
 	my $self = bless {
 		@_,
 	}, $pk;
-	#$self->init();
 	return $self;
 }
 
@@ -21,14 +20,13 @@ sub reply {
 	$self->{s} or croak "Can't call reply without connection";
 	my $buf = pack('VVV', $self->{type}, length($_[0]), $self->{id} ).$_[0];
 	$self->{s}->write($self->{idx},\$buf);
-	delete $self->{s};
+	( delete $self->{s} )->requests(-1);
 }
 
 sub DESTROY {
 	my $self = shift;
-	#warn "DES $self";
 	return %$self = () unless $self->{s};
-	$self->reply(pack("V V/a*",255, "Request not handled") );
+	$self->reply(pack("V V/a*",-1, "Request not handled") );
 	return;
 }
 
