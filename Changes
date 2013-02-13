@@ -1,5 +1,9 @@
 Revision history for Perl extension AnyEvent::IProto.
 
+0.03  13.02.2013
+	- Rewrite server to listen/accept instead of tcp_server
+	- More fixes on stopping of server
+
 0.02  13.12.2012
 	- Fix callbacks in client
 	- Fix stopping of server

@@ -19,8 +19,8 @@ sub reply {
 	my $self = shift;
 	$self->{s} or croak "Can't call reply without connection";
 	my $buf = pack('VVV', $self->{type}, length($_[0]), $self->{id} ).$_[0];
-	$self->{s}->write($self->{idx},\$buf);
-	( delete $self->{s} )->requests(-1);
+	$self->{s}->requests(-1);
+	( delete $self->{s} )->write($self->{idx},\$buf);
 }
 
 sub DESTROY {

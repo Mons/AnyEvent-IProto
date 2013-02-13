@@ -8,9 +8,11 @@ use AnyEvent::IProto::Server::Req;
 use AnyEvent::Socket;
 
 use Errno qw(EAGAIN EINTR);
-use AnyEvent::Util qw(WSAEWOULDBLOCK);
+use AnyEvent::Util qw(WSAEWOULDBLOCK guard AF_INET6 fh_nonblocking);
+use Socket qw(AF_INET AF_UNIX SOCK_STREAM SOCK_DGRAM SOL_SOCKET SO_REUSEADDR IPPROTO_TCP TCP_NODELAY);
 
 sub MAX_READ_SIZE () { 128 * 1024 }
+our $SEQ = 1;
 
 sub new {
 	my $pk = shift;
@@ -45,31 +47,80 @@ sub default {
 }
 
 sub init {}
+
 sub start {
-	weaken(my $self = shift);
-	$self->{server} =
-		tcp_server $self->{host}, $self->{port},
-		sub { $self or return; unshift @_,$self; goto &{ $self->can('accept') }; },
-		#sub { $self->{backlog} },
-	;
-	return;
+	croak "Use listen/accept instead";
 }
 
-sub stop {
-	my ($self,$cb) = @_;
-	delete $self->{server};
-	if ($self->{requests} > 0) {
-		warn "Waiting for $self->{requests} requests to finish";
-		$self->{stop} = $cb;
-	} else {
-		warn "No requests";
-		$cb->();
+sub listen:method {
+	my $self = shift;
+	my $host = $self->{host};
+	my $service = $self->{port};
+	$host = $AnyEvent::PROTOCOL{ipv4} < $AnyEvent::PROTOCOL{ipv6} && AF_INET6 ? "::" : "0" unless defined $host;
+	
+	my $ipn = parse_address $host
+		or Carp::croak "$self.listen: cannot parse '$host' as host address";
+	
+	my $af = address_family $ipn;
+	
+	# win32 perl is too stupid to get this right :/
+	Carp::croak "listen/socket: address family not supported"
+		if AnyEvent::WIN32 && $af == AF_UNIX;
+	
+	socket my $fh, $af, SOCK_STREAM, 0 or Carp::croak "listen/socket: $!";
+	
+	if ($af == AF_INET || $af == AF_INET6) {
+		setsockopt $fh, SOL_SOCKET, SO_REUSEADDR, 1
+			or Carp::croak "listen/so_reuseaddr: $!"
+				unless AnyEvent::WIN32; # work around windows bug
+		
+		unless ($service =~ /^\d*$/) {
+			$service = (getservbyname $service, "tcp")[2]
+				or Carp::croak "tcp_listen: $service: service unknown"
+		}
+	} elsif ($af == AF_UNIX) {
+		unlink $service;
 	}
+	
+	bind $fh, AnyEvent::Socket::pack_sockaddr( $service, $ipn )
+		or Carp::croak "listen/bind: $!";
+	
+	fh_nonblocking $fh, 1;
+	
+	$self->{fh} = $fh;
+	
+	$self->prepare();
+	
+	listen $self->{fh}, $self->{backlog}
+		or Carp::croak "listen/listen: $!";
+	
+	return wantarray ? do {
+		my ($service, $host) = AnyEvent::Socket::unpack_sockaddr( getsockname $self->{fh} );
+		(format_address $host, $service);
+	} : ();
+}
+
+sub prepare {}
+
+sub accept:method {
+	weaken( my $self = shift );
+	$self->{aw} = AE::io $self->{fh}, 0, sub {
+		while ($self->{fh} and (my $peer = accept my $fh, $self->{fh})) {
+			AnyEvent::Util::fh_nonblocking $fh, 1; # POSIX requires inheritance, the outside world does not
+			#my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $peer;
+			setsockopt($fh, IPPROTO_TCP, TCP_NODELAY, 1) or die "setsockopt(TCP_NODELAY) failed:$!";
+			binmode $fh, ':raw';
+			#$self->incoming($fh, AnyEvent::Socket::format_address $host, $service);
+			$self->incoming($fh);
+		}
+	};
+	return;
 }
 
 sub write :method {
 	my ($self,$id,$buf) = @_;
-	exists $self->{$id} or return warn "unknown id $id";
+	exists $self->{$id} or return;# $self->{debug} && warn "No client $id for response packet";
+	#warn "write after shutdown" if $self->{graceful};
 	if ( $self->{$id}{wbuf} ) {
 		${ $self->{$id}{wbuf} } .= $$buf;
 		return;
@@ -107,12 +158,14 @@ sub write :method {
 	
 }
 
-sub accept :method {
-	my ( $self, $fh, $host, $port ) = @_;
-	my $id = refaddr( $fh );
+sub incoming {
+	#my ( $self, $fh, $host, $port ) = @_;
+	my ( $self, $fh ) = @_;
+	#my $id = fileno($fh).':'.refaddr( $fh );
+	my $id = fileno($fh).':'.$SEQ;
 	
-	#warn "client connected ($id) @_";
-	
+	warn "client connected ($id)" if $self->{debug};
+	$self->{active_connections}++;
 	$self->{$id}{fh} = $fh;
 	$self->{$id}{rw} = AE::io $fh, 0, sub {
 		#warn "rw.io.$id";
@@ -130,8 +183,9 @@ sub accept :method {
 			
 			my $ix = 0;
 			while () {
-				last if length $buf < 12;
+				last if ( length($buf)-$ix < 12 );
 				my ($type,$l,$seq) = unpack 'VVV', substr($buf,$ix,12);
+				#warn "got $type + $l + $seq $ix -> ".length $buf;
 				if ( length($buf) - $ix >= 12 + $l ) {
 					$ix += 12;
 					
@@ -184,7 +238,7 @@ sub accept :method {
 					$ix += $l;
 				}
 				else {
-					warn "wait for +".( 12 + $l - $ix - length($buf) )." more data" if $self->{debug};
+					warn "wait for +".( 12 + $l - ( length($buf) - $ix ) )." more data" if $self->{debug};
 					last;
 				}
 				
@@ -195,7 +249,6 @@ sub accept :method {
 		$self->{$id}{rbuf} = $buf;
 		
 		if (defined $len) {
-			#warn "EOF from client ($len)";
 			$! = Errno::EPIPE;
 		} else {
 			if ($! == EAGAIN or $! == EINTR or $! == WSAEWOULDBLOCK) {
@@ -213,22 +266,60 @@ sub accept :method {
 
 sub requests {
 	my ( $self, $delta ) = @_;
+	$self->{requests_total} -= $delta if $delta < 0;
 	$self->{requests} += $delta;
-	if ( $self->{stop} and $self->{requests} == 0 ) {
-		$self->{stop}();
-	}
+	if ( $self->{graceful} and $self->{requests} == 0 ) {
+		$self->cleanup;
+	};
 }
 
 sub drop {
-	my ($self,$id) = @_;
-	$self->{requests}--;
-	%{ delete $self->{$id} || {} } = ();
-	warn "client disconnected ($id) @_" if $self->{debug};
-	
-	if ( $self->{stop} and $self->{requests} == 0 ) {
-		$self->{stop}();
+	my $self = shift;
+	my $id = shift;
+	exists $self->{$id} or return;
+	$self->{active_connections}--;
+	%{ delete $self->{$id} } = ();
+	warn "client $id disconnected @_" if $self->{debug};
+	if ( $self->{graceful} and $self->{requests} == 0 ) {
+		$self->cleanup;
+	};
+}
+
+sub cleanup {
+	my $self = shift;
+	delete $self->{gracetimer};
+	for my $id (keys %$self) {
+		ref $self->{$id} eq 'HASH' and exists $self->{$id}{fh} or next; # other key
+		close( $self->{$id}{fh} );
+		%{ delete $self->{$id} } = ();
+	}
+	( delete $self->{graceful} )->() if $self->{graceful};
+	return;
+}
+
+sub graceful {
+	my $self = shift;
+	my $cb = pop;
+	my $timeout = @_ ? shift : 3;
+	delete $self->{aw};
+	close $self->{fh};
+	for my $id (keys %$self) {
+		ref $self->{$id} eq 'HASH' and exists $self->{$id}{fh} or next; # other key
+		#shutdown $self->{$id}{fh}, 0 or warn "shutdown for $id failed: $!";
+	}
+	$self->{gracetimer} = AE::timer $timeout,0,sub {
+		$self->cleanup;
+	};
+	if ($self->{requests} == 0 or $self->{active_connections} == 0) {
+		warn "close immediately";
+		$self->cleanup;
+		$cb->();
+	} else {
+		warn "have $self->{requests} active requests over $self->{active_connections} connections";
+		$self->{graceful} = $cb;
 	}
 }
+BEGIN{ *stop = \&graceful; }
 
 1;
 __END__
