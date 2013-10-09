@@ -11,6 +11,8 @@ sub new {
 	return $self;
 }
 
+sub host { $_[0]{host} }
+sub port { $_[0]{port} }
 sub id   { $_[0]{id}   }
 sub type { $_[0]{type} }
 sub data { @{ $_[0]{data} } }

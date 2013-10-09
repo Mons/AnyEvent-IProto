@@ -107,11 +107,14 @@ sub accept:method {
 	$self->{aw} = AE::io $self->{fh}, 0, sub {
 		while ($self->{fh} and (my $peer = accept my $fh, $self->{fh})) {
 			AnyEvent::Util::fh_nonblocking $fh, 1; # POSIX requires inheritance, the outside world does not
-			#my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $peer;
 			setsockopt($fh, IPPROTO_TCP, TCP_NODELAY, 1) or die "setsockopt(TCP_NODELAY) failed:$!";
 			binmode $fh, ':raw';
-			#$self->incoming($fh, AnyEvent::Socket::format_address $host, $service);
-			$self->incoming($fh);
+			if ($self->{want_peer}) {
+				my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $peer;
+				$self->incoming($fh, AnyEvent::Socket::format_address $host, $service);
+			} else {
+				$self->incoming($fh);
+			}
 		}
 	};
 	return;
@@ -159,8 +162,8 @@ sub write :method {
 }
 
 sub incoming {
-	#my ( $self, $fh, $host, $port ) = @_;
-	my ( $self, $fh ) = @_;
+	my ( $self, $fh, $host, $port ) = @_;
+	#my ( $self, $fh ) = @_;
 	#my $id = fileno($fh).':'.refaddr( $fh );
 	my $id = fileno($fh).':'.$SEQ;
 	
@@ -212,6 +215,10 @@ sub incoming {
 								data => \@rv,
 								s    => $self,
 								idx  => $id,
+								defined $host ? (
+									host => $host,
+									port => $port,
+								) : (),
 							);
 							weaken( $req->{s} );
 						1} or do {
@@ -223,12 +230,16 @@ sub incoming {
 								data  => ["$$ref"],
 								s     => $self,
 								idx   => $id,
+								defined $host ? (
+									host => $host,
+									port => $port,
+								) : (),
 							);
 						};
 						$map->[1]( $req );
 					
 					} else {
-						warn "Unhandled request packet (seq:$seq) of type $type with body size $l\n";
+						warn "Unhandled request packet (seq:$seq) of type $type with body size $l received from $host:$port\n";
 						my $body = pack("V V/a*", -1, "Request not handled");
 						my $buf = pack('VVV', $type, length($body), $seq ).$body;
 						$self->write($id,\$buf);
