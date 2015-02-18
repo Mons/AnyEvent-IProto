@@ -37,6 +37,9 @@ use constant {
 	DISCONNECTING  => 8,
 	RECONNECTING   => 16,
 	RESOLVE        => 32,
+	
+	CONNECT_FAILED => 1,
+	CONNECT_RESET  => 2,
 };
 
 sub xd ($;$) {
@@ -146,6 +149,7 @@ sub connect {
 					$self->state( INIT );
 					$self->connect($cb);
 				} else {
+					$self->{error} = CONNECT_FAILED;
 					$self->_on_connreset(@_);
 				}
 			});
@@ -168,6 +172,7 @@ sub connect {
 					$self->state( INIT );
 					$self->connect($cb);
 				} else {
+					$self->{error} = CONNECT_FAILED;
 					$self->_on_connreset(@_);
 				}
 			});
@@ -197,6 +202,7 @@ sub _on_connect {
 	my ($self,$fh,$host,$port,$cb) = @_;
 	unless ($fh) {
 		#warn "Connect failed: $!";
+		$self->{error} = CONNECT_FAILED;
 		if ($self->{reconnect}) {
 			$self->{connfail} && $self->{connfail}->( $self,"$!" );
 		} else {
@@ -206,7 +212,13 @@ sub _on_connect {
 		return;
 	}
 	$self->state( CONNECTED );
+	$self->{error} = CONNECT_RESET; # after connected "error" may be only reset
 	$self->{fh} = $fh;
+	if ( my $w = delete $self->{_waitconn}  ) {
+		for ( @{ $w } ) {
+			$self->request(@$_);
+		}
+	}
 	$self->{connected} && $self->{connected}->( $self,$host,$port );
 		
 	$self->{rw} = AE::io $fh,0,sub {
@@ -281,14 +293,14 @@ sub _on_connect {
 		$self->{rbuf} = $buf;
 		
 		if (defined $len) {
-			warn "EOF from client ($len)";
+			#warn "EOF from client ($len)";
 			$! = Errno::EPIPE;
 			$self->_on_connreset("$!");
 		} else {
 			if ($! == EAGAIN or $! == EINTR or $! == WSAEWOULDBLOCK) {
 				return;
 			} else {
-				warn "Client gone: $!";
+				#warn "Client gone: $!";
 				#$! = Errno::EPIPE;
 				$self->_on_connreset("$!");
 			}
@@ -298,6 +310,10 @@ sub _on_connect {
 
 sub _on_connreset {
 	my ($self,$error) = @_;
+	if ($self->{reconnect} and $self->{error} == CONNECT_RESET) {
+		#warn "connect was reset, set waitconn";
+		$self->{_waitconn} = [];
+	}
 	while (my ($seq,$hdl) = each %{ $self->{req} } ) {
 		my ($reqt, $cb, $unp, $cls) = @$hdl;
 		my $res = $cls->new(
@@ -309,6 +325,12 @@ sub _on_connreset {
 	}
 	%{$self->{req}} = ();
 	$self->disconnect($error);
+	if ( ($self->{error} != CONNECT_RESET ) and ( my $w = delete $self->{_waitconn} ) ) {
+		for ( @{ $w } ) {
+			my $cb = $_->[-1];
+			$cb->( undef, "Connection reset, $error" );
+		}
+	}
 	$self->_reconnect_after;
 }
 
@@ -318,11 +340,16 @@ sub _reconnect_after {
 		# Want to reconnect
 		$self->state( RECONNECTING );
 		warn "Reconnecting (state=$self->{state}) to $self->{host}:$self->{port} after $self->{reconnect}...\n" if $self->{debug};
-		$self->{timers}{reconnect} = AE::timer $self->{reconnect},0, sub {
-			$self or return;
+		if ($self->{error} == CONNECT_RESET) {
 			$self->state(INIT);
 			$self->connect;
-		};
+		} else {
+			$self->{timers}{reconnect} = AE::timer $self->{reconnect},0, sub {
+				$self or return;
+				$self->state(INIT);
+				$self->connect;
+			};
+		}
 	} else {
 		$self->state(INIT);
 		return;
@@ -368,6 +395,11 @@ sub request {
 	my $cb   = pop;
 	ref $cb eq 'CODE' or
 		croak 'Usage: request( $type, [$body, [$format, [$seq, ]]] $cb )';
+	if ($self->{_waitconn}) {
+		#warn "active reconnect, set waiter";
+		push @{ $self->{_waitconn} },[ @_, $cb ];
+		return;
+	}
 	my $type = shift;
 	my $body = @_ ? shift : '';
 	my $format;
@@ -385,6 +417,7 @@ sub request {
 		return $cb->(undef, "Duplicate request for id $seq");
 	}
 	$format->[1] ||= 'AnyEvent::IProto::Client::Res';
+	
 	
 	$self->{state} == CONNECTED or return $cb->(undef, "Not connected");
 	
