@@ -91,6 +91,14 @@ sub new {
 	return $self;
 }
 
+sub ok {
+	my $self = shift;
+	if ($self->{state} == CONNECTED ) {
+		return 1;
+	}
+	return 0;
+}
+
 sub register {
 	my $self = shift;
 	while (my ($type, $hdl) = splice @_,0,2) {
