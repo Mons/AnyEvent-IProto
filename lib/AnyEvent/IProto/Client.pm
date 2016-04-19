@@ -208,6 +208,8 @@ sub connect {
 
 sub _on_connect {
 	my ($self,$fh,$host,$port,$cb) = @_;
+	delete $self->{rbuf};
+	delete $self->{wbuf};
 	unless ($fh) {
 		#warn "Connect failed: $!";
 		$self->{error} = CONNECT_FAILED;
@@ -318,6 +320,8 @@ sub _on_connect {
 
 sub _on_connreset {
 	my ($self,$error) = @_;
+	delete $self->{rbuf};
+	delete $self->{wbuf};
 	if ($self->{reconnect} and $self->{error} == CONNECT_RESET) {
 		#warn "connect was reset, set waitconn";
 		$self->{_waitconn} = [];
