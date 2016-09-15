@@ -210,6 +210,9 @@ sub _on_connect {
 	my ($self,$fh,$host,$port,$cb) = @_;
 	delete $self->{rbuf};
 	delete $self->{wbuf};
+	delete $self->{ww};
+	delete $self->{rw};
+	
 	unless ($fh) {
 		#warn "Connect failed: $!";
 		$self->{error} = CONNECT_FAILED;
@@ -243,7 +246,7 @@ sub _on_connect {
 				$self->{read_size} = $self->{max_read_size} || MAX_READ_SIZE
 					if $self->{read_size} > ($self->{max_read_size} || MAX_READ_SIZE);
 			}
-			
+			$self->{no_write} = 1;
 			my $ix = 0;
 			while () {
 				last if length $buf < 12 + $ix;
@@ -251,6 +254,7 @@ sub _on_connect {
 				#warn "$type,$l,$seq";
 				if ( length($buf) - $ix >= 12 + $l ) {
 					$ix += 12;
+					$self->{no_write} = 0 if length($buf) == $ix + $l;
 					
 					if (exists $self->{req}{$seq} ) {
 						my ($reqt, $cb, $unp, $cls) = @{ delete $self->{req}{$seq} };
@@ -283,7 +287,6 @@ sub _on_connect {
 								data  => ["$$ref"],
 							);
 						};
-						
 						$cb->( $res );
 					}
 					else {
@@ -295,8 +298,8 @@ sub _on_connect {
 				else {
 					last;
 				}
-				
 			}
+			$self->{no_write} = 0;
 			$buf = substr($buf,$ix);# if length $buf > $ix;
 		}
 		return unless $self;
@@ -322,8 +325,11 @@ sub _on_connreset {
 	my ($self,$error) = @_;
 	delete $self->{rbuf};
 	delete $self->{wbuf};
+	delete $self->{rw};
+	delete $self->{ww};
+	
 	if ($self->{reconnect} and $self->{error} == CONNECT_RESET) {
-		#warn "connect was reset, set waitconn";
+		# warn "connect was reset, set waitconn";
 		$self->{_waitconn} = [];
 	}
 	while (my ($seq,$hdl) = each %{ $self->{req} } ) {
@@ -382,6 +388,8 @@ sub disconnect {
 	if ( $self->{pstate} &(  CONNECTED | CONNECTING ) ) {
 		delete $self->{con};
 	}
+	delete $self->{rbuf};
+	delete $self->{wbuf};
 	delete $self->{ww};
 	delete $self->{rw};
 	
@@ -441,7 +449,13 @@ sub request {
 		${ $self->{wbuf} } .= $buf;
 		return;
 	}
-	my $w = syswrite( $self->{fh}, $buf );
+	my $w;
+	if ($self->{no_write}) {
+		$w = 0;
+	} else {
+		$w = syswrite( $self->{fh}, $buf );
+	}
+	
 	if ($w == length $buf) {
 		# ok;
 	}
