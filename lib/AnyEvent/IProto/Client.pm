@@ -123,12 +123,18 @@ sub _resolve {
 		if (@_) {
 			my $time = time;
 			my @addrs;
-			my $ttl = 2**32;
-			for my $r (@_) {
-				#  [$name, $type, $class, $ttl, @data],
-				$ttl = min( $ttl, $time + $r->[3] );
-				push @addrs, $r->[4];
-			}
+                        my $ttl = int($AnyEvent::VERSION) == 5 ? 3600 : 2**32;
+                        for my $r (@_) {
+                                if(int($AnyEvent::VERSION) == 5){
+                                        #  [$name, $type, $class, @data], 
+                                        push @addrs, $r->[3];
+                                }
+                                else {  
+                                        #  [$name, $type, $class, $ttl, @data],
+                                        $ttl = min( $ttl, $time + $r->[3] );
+                                        push @addrs, $r->[4];
+                                }       
+                        }       
 			$self->{addrs} = \@addrs;
 			warn "Resolved $self->{host} into @addrs\n" if $self->{debug};
 			$self->{addrs_ttr} = $ttl;
